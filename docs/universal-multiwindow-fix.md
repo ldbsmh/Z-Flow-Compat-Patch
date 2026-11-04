@@ -339,3 +339,40 @@ fragment com.tencent.mm.ui.conversation.MainUI
 | `MainUI#u0` 写入钳制 | 把 `(0,1)` 改成 `(0,0)`，遮罩层也归零 | 是（保险） |
 | 多窗口诱导 + 缓存中和 | `H=true` 已成立，作为兜底 | 留作对照 |
 | ~~`View.setTranslationY` 钳制~~ | 会把下拉联动一起钉死 | **已删除** |
+
+## 16. 最终结论（2026-11-04，微信 8.0.76 实测通过）
+
+删掉位移钳制后，静态问题全部消失、下拉动画也恢复正常，日常使用验证通过。
+最终生效的是**两条，不是一个 hook**：
+
+| 组件 | 做了什么 | 为什么必须 |
+| --- | --- | --- |
+| `StatusBarDimenFix`（微信主进程） | 虚拟屏内把 `Resources.getDimensionPixelSize/getDimensionPixelOffset/getDimension` 对 `status_bar_height` 的返回值改成 **1px** | 标题栏下移 124px 的根因就是它。**不能改成 0**：微信对 `<= 0` 有 `25dp × density` 的兜底（本机 90px） |
+| `UniversalMultiWindowFix#hookMarginWriter` | 虚拟屏内把 `MainUI` 唯一 `(int,int)void` 的入参强制成 `(0,0)` | 首页顶部遮罩高度，是第二处按状态栏高度排版的地方 |
+
+保留但**不再承担修复职责**的部分：
+
+- `isInMultiWindowMode()` 诱导 —— 实测框架方法已返回 true，但微信的 `H` 字段仍然为 false，
+  说明它不从这里取值。保留只为将来对照，可在确认无副作用后删除。
+- 偏好缓存中和（`Main_top_marign` / `Main_need_read_top_margin`）—— 读取分支在
+  `H=true` 后不会被走到，属于纯兜底，日志里 0 次命中是正常的。
+
+已删除：`View.setTranslationY` 钳制。它是 `ConversationListView.onScroll` 驱动的下拉联动，
+钉死会让标题栏不跟手、露出列表头部，看起来像"顶部固定了一行状态栏"。
+
+### 为什么这版能跨版本
+
+| 依赖点 | 跨版本稳定性 |
+| --- | --- |
+| `Resources.getDimensionPixelSize` 等三个方法 | 系统 API，永不变 |
+| `android:dimen/status_bar_height` | 系统资源名 |
+| `com.tencent.mm.ui.conversation.MainUI` | 微信首页主界面类，多年未改名 |
+| `MainUI` 中唯一的 `(int,int)void` | 定位不到时只警告并降级，不会改错方法 |
+
+### 升级微信后如果又出问题，按这个顺序查
+
+1. 打开详细日志，看 `已挂钩 MainUI#xxx(int,int)` 有没有出现；若提示"方法数=N，无法唯一定位"，
+   说明首页多了个同签名方法，需要加附加条件（如按字段引用、按调用方筛选）。
+2. 看快照里 `ActionBarContainer` 的 `@x,y` 和 `ty=`：`y`/`ty` 非 0 就是状态栏高度又漏了，
+   检查 `status_bar_height` 是否被归零、是否为 0（0 会触发 25dp 兜底，必须是 1）。
+3. 看 `DUMP` 里 `text="微信"` 出现次数：两次即双行，此时看列表容器的 `m=`/`pad=`。

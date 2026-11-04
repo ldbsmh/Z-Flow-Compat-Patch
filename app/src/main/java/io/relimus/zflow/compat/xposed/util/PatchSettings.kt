@@ -19,8 +19,9 @@ object PatchSettings {
     /**
      * 补丁开关 key（与设置页的 SwitchCompat 绑定 key 一致）。
      *
-     * [KEY_UNIVERSAL_MULTIWINDOW_FIX] 是实验开关，默认关闭：它走"诱导微信进入多窗口
-     * 分支"的版本无关方案，与已验证的 [KEY_WECHAT_STATUSBAR_FIX] 是二选一的关系。
+     * [KEY_UNIVERSAL_MULTIWINDOW_FIX] 默认关闭（保持"装了就有变化"的保守默认值），
+     * 它是不依赖混淆名的版本无关方案，与已验证的 [KEY_WECHAT_STATUSBAR_FIX] 二选一。
+     * 开启后 `StatusBarDimenFix` 会同时在微信主进程生效，两者是配套关系。
      */
     const val KEY_WECHAT_STATUSBAR_FIX = "wechat_statusbar_fix"
     const val KEY_UNIVERSAL_MULTIWINDOW_FIX = "universal_multiwindow_fix"

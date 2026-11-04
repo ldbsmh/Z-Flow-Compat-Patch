@@ -21,8 +21,10 @@ import io.relimus.zflow.compat.xposed.util.PatchSettings
  * 2. [StatusBarDimenFix]：小窗顶部空白（读框架 status_bar_height 的应用，如起点读书）
  * 3. [TelegramPipDisableFix]：Telegram 系小窗只剩角落画面
  *
- * 另有实验性的 [UniversalMultiWindowFix]（默认关闭）：用"诱导微信进入多窗口分支 +
- * 中和偏好缓存"的版本无关方案替代第 1 项，供新版微信失效时对照使用。
+ * 另有 [UniversalMultiWindowFix]（默认关闭，需手动开启）：版本无关方案，替代第 1 项。
+ * 它不依赖任何混淆名——小窗内把 `status_bar_height` 收缩为 1px、钳制首页顶部偏移写入口、
+ * 并让虚拟屏里的微信按多窗口逻辑布局。已在微信 8.0.76 实测通过（详见
+ * docs/universal-multiwindow-fix.md），微信升级后通常无需再改代码。
  *
  * 每个补丁独立 try/catch：一个补丁不兼容不能影响另外两个。
  */
@@ -61,9 +63,9 @@ class CompatModule : XposedModule() {
         // 1) 微信：小窗双标题栏
         runPatch("WeChatStatusBarFix") { WeChatStatusBarFix.install(this, cl, pkg) }
 
-        // 1b) 微信：版本无关的通用方案（实验，默认关闭）
+        // 1b) 微信：版本无关的通用方案（默认关闭，需在设置里手动开启）
         //     与 1) 是替代关系：两者同时开启时，旧的按名探测可能先命中并与多窗口分支
-        //     互相覆盖，验证时建议只开一个。
+        //     互相覆盖，实测时建议只开一个。
         //     只装主进程：:push / :appbrand / :xweb 等子进程没有需要修的界面，
         //     装进去只会多出几倍日志与无谓 hook。
         if (hostProcessName.isEmpty() || hostProcessName == "com.tencent.mm") {
