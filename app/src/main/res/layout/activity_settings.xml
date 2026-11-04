@@ -79,6 +79,13 @@
                     style="@style/ItemDivider" />
 
                 <include
+                    android:id="@+id/item_universal"
+                    layout="@layout/item_setting_switch" />
+
+                <View
+                    style="@style/ItemDivider" />
+
+                <include
                     android:id="@+id/item_statusbar"
                     layout="@layout/item_setting_switch" />
 

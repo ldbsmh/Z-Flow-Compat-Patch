@@ -13,6 +13,8 @@
 
     <string name="pref_wechat_title">微信小窗标题栏重复修复</string>
     <string name="pref_wechat_summary">修正微信在小窗中标题栏重复出现的问题。需先将微信加入 LSPosed 作用域；开关切换后切回微信前台即生效。</string>
+    <string name="pref_universal_title">通用多窗口修复（实验）</string>
+    <string name="pref_universal_summary">不依赖微信版本混淆名的替代方案：让微信在小窗里按系统的多窗口逻辑布局，并中和全屏残留的顶部偏移缓存。与上面的微信修复二选一，验证时建议只开一个；切换后需完整结束微信进程。</string>
     <string name="pref_statusbar_title">小窗顶部空白修复</string>
     <string name="pref_statusbar_summary">修正部分应用在小窗顶部预留状态栏高度、导致空白的问题（如起点读书）。需先将该应用加入 LSPosed 作用域；开关切换后切回应用前台即生效。</string>
     <string name="pref_telegram_title">关闭 Telegram 画中画</string>

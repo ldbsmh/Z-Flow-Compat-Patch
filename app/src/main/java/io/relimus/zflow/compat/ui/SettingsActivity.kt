@@ -38,7 +38,7 @@ class SettingsActivity : AppCompatActivity(),
 
         prefs = PreferenceManager.getDefaultSharedPreferences(this)
 
-        // 补丁开关：微信 / 小窗空白 / Telegram 画中画
+        // 补丁开关：微信 / 微信通用（实验） / 小窗空白 / Telegram 画中画
         bindSwitch(
             rowId = R.id.item_wechat,
             key = "wechat_statusbar_fix",
@@ -46,6 +46,14 @@ class SettingsActivity : AppCompatActivity(),
             iconRes = R.drawable.ic_patch_wechat,
             titleRes = R.string.pref_wechat_title,
             summaryRes = R.string.pref_wechat_summary,
+        )
+        bindSwitch(
+            rowId = R.id.item_universal,
+            key = KEY_UNIVERSAL,
+            default = false,
+            iconRes = R.drawable.ic_patch_wechat,
+            titleRes = R.string.pref_universal_title,
+            summaryRes = R.string.pref_universal_summary,
         )
         bindSwitch(
             rowId = R.id.item_statusbar,
@@ -173,7 +181,7 @@ class SettingsActivity : AppCompatActivity(),
         val editor = prefs.edit()
 
         for (key in PATCH_KEYS) {
-            val value = remote.getBoolean(key, true)
+            val value = remote.getBoolean(key, defaultOf(key))
             switchRows[key]?.isChecked = value
             editor.putBoolean(key, value)
         }
@@ -188,7 +196,7 @@ class SettingsActivity : AppCompatActivity(),
     /** 刷新所有开关为本地当前值（onResume 时调用）。 */
     private fun refreshAllSwitches() {
         for (key in PATCH_KEYS) {
-            switchRows[key]?.isChecked = prefs.getBoolean(key, true)
+            switchRows[key]?.isChecked = prefs.getBoolean(key, defaultOf(key))
         }
         for (key in LOG_KEYS) {
             switchRows[key]?.isChecked = prefs.getBoolean(key, defaultOf(key))
@@ -206,8 +214,12 @@ class SettingsActivity : AppCompatActivity(),
     }
 
     private companion object {
+        /** 与 PatchSettings.KEY_UNIVERSAL_MULTIWINDOW_FIX 保持一致。 */
+        const val KEY_UNIVERSAL = "universal_multiwindow_fix"
+
         val PATCH_KEYS = listOf(
             "wechat_statusbar_fix",
+            KEY_UNIVERSAL,
             "statusbar_dimen_fix",
             "telegram_pip_disable",
         )
@@ -216,10 +228,10 @@ class SettingsActivity : AppCompatActivity(),
             "log_to_framework",
         )
 
-        /** 默认值：补丁默认开，详细日志默认关，写框架日志默认开。 */
+        /** 默认值：补丁默认开（实验开关默认关），详细日志默认关，写框架日志默认开。 */
         fun defaultOf(key: String): Boolean = when (key) {
+            KEY_UNIVERSAL -> false
             "verbose_log" -> false
-            "log_to_framework" -> true
             else -> true
         }
     }

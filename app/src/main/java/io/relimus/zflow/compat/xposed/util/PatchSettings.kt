@@ -16,8 +16,14 @@ object PatchSettings {
 
     const val GROUP = "compat_settings"
 
-    /** 补丁开关 key（与 res/xml/settings.xml 一致） */
+    /**
+     * 补丁开关 key（与设置页的 SwitchCompat 绑定 key 一致）。
+     *
+     * [KEY_UNIVERSAL_MULTIWINDOW_FIX] 是实验开关，默认关闭：它走"诱导微信进入多窗口
+     * 分支"的版本无关方案，与已验证的 [KEY_WECHAT_STATUSBAR_FIX] 是二选一的关系。
+     */
     const val KEY_WECHAT_STATUSBAR_FIX = "wechat_statusbar_fix"
+    const val KEY_UNIVERSAL_MULTIWINDOW_FIX = "universal_multiwindow_fix"
     const val KEY_STATUSBAR_DIMEN_FIX = "statusbar_dimen_fix"
     const val KEY_TELEGRAM_PIP_DISABLE = "telegram_pip_disable"
     const val KEY_VERBOSE_LOG = "verbose_log"
@@ -59,6 +65,7 @@ object PatchSettings {
             "设置已载入: verbose=${PatchLog.verbose} " +
                 "logToFramework=${PatchLog.logToFramework} " +
                 "wechat=${isEnabled(KEY_WECHAT_STATUSBAR_FIX)} " +
+                "universal=${isEnabled(KEY_UNIVERSAL_MULTIWINDOW_FIX, default = false)} " +
                 "statusbar=${isEnabled(KEY_STATUSBAR_DIMEN_FIX)} " +
                 "telegram=${isEnabled(KEY_TELEGRAM_PIP_DISABLE)}"
         )

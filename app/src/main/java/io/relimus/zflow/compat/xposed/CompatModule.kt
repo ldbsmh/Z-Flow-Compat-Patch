@@ -7,6 +7,7 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import io.relimus.zflow.compat.xposed.patch.StatusBarDimenFix
 import io.relimus.zflow.compat.xposed.patch.TelegramPipDisableFix
+import io.relimus.zflow.compat.xposed.patch.UniversalMultiWindowFix
 import io.relimus.zflow.compat.xposed.patch.WeChatStatusBarFix
 import io.relimus.zflow.compat.xposed.util.PatchLog
 import io.relimus.zflow.compat.xposed.util.PatchSettings
@@ -18,6 +19,9 @@ import io.relimus.zflow.compat.xposed.util.PatchSettings
  * 1. [WeChatStatusBarFix]：微信小窗双标题栏
  * 2. [StatusBarDimenFix]：小窗顶部空白（读框架 status_bar_height 的应用，如起点读书）
  * 3. [TelegramPipDisableFix]：Telegram 系小窗只剩角落画面
+ *
+ * 另有实验性的 [UniversalMultiWindowFix]（默认关闭）：用"诱导微信进入多窗口分支 +
+ * 中和偏好缓存"的版本无关方案替代第 1 项，供新版微信失效时对照使用。
  *
  * 每个补丁独立 try/catch：一个补丁不兼容不能影响另外两个。
  */
@@ -55,6 +59,11 @@ class CompatModule : XposedModule() {
 
         // 1) 微信：小窗双标题栏
         runPatch("WeChatStatusBarFix") { WeChatStatusBarFix.install(this, cl, pkg) }
+
+        // 1b) 微信：版本无关的通用方案（实验，默认关闭）
+        //     与 1) 是替代关系：两者同时开启时，旧的按名探测可能先命中并与多窗口分支
+        //     互相覆盖，验证时建议只开一个。
+        runPatch("UniversalMultiWindowFix") { UniversalMultiWindowFix.install(this, cl, pkg) }
 
         // 2) 通用：小窗顶部空白（任何加入作用域的应用都可能命中）
         //    微信进程必须排除：微信的状态栏高度由 WeChatStatusBarFix 统一处理，
