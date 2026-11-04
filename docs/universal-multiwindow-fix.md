@@ -262,3 +262,37 @@ fragment com.tencent.mm.ui.conversation.MainUI
 - 读取入口从 `getDimensionPixelSize` 扩到 `getDimensionPixelSize` /
   `getDimensionPixelOffset` / `getDimension` 三个重载，避免"某些页面改了、某些没改"。
 - 每个 displayId 首次归零打一条 info（`status_bar_height 124 → 0`），便于确认生效。
+
+## 14. 22:21 实测：资源归零后又冒出 90px（第四层：位移钳制）
+
+这一版装上了，日志证明改动确实生效：`status_bar_height 124 → 0`，三份自动快照里
+`status_bar_height=0`。但**顶部灰带没消失**，只是从 124px 缩到 90px：
+
+```text
+22:21:25  StatusBarDimenFix: 已挂钩 Activity.onCreate / onResume / onMovedToDisplay
+22:21:26  StatusBarDimenFix: 已挂钩 Resources.getDimensionPixelSize / getDimensionPixelOffset / getDimension
+22:21:32  StatusBarDimenFix: displayId=50 非主屏，status_bar_height 124 → 0
+22:21:33  DUMP[auto-d50-n1-LauncherUI] status_bar_height=0 ... ActionBarContainer @0,90 ty=90.0
+22:21:44  DUMP[auto-d51-n1-LauncherUI] 同上
+22:21:55  DUMP[auto-d52-n1-LauncherUI] 同上
+```
+
+两条新结论：
+
+1. **90px = 25dp × 3.6density**，是「读不到状态栏高度就 `25 * density` 兜底」的典型写法。
+   资源归零反而触发了兜底 —— 所以归零值改成 1px（`SHRUNK_PX`），既绕过 `<= 0` 兜底，
+   又不占位。
+2. **`MainUI` 的写入点 `u0` 这一轮一次都没被调用**（只有 22:13 那次日志里有）。
+   说明 `u0` 只在特定时机写，首页标题栏的下移另有路径 —— 直接表现就是
+   `ActionBarContainer.translationY`。
+
+### 第四层：`View.setTranslationY(float)`
+
+不再追"谁算出的这个值"，改在**结果**上动手：
+
+- 挂 `android.view.View#setTranslationY(float)`（框架方法，永不混淆）；
+- 只处理类名以 `ActionBarContainer` 结尾的 View、只处理 `value > 0`、只在虚拟屏；
+- 命中时改成 `0f`，并在首次命中打印调用链（5 层微信帧），用于确认来源；
+- 主屏、负值（向上隐藏标题栏的动画）、其它 View 全部原样放行。
+
+这样即使微信换一套状态栏高度算法（资源 / 兜底 / 自己的缓存），标题栏也不会再被推下去。

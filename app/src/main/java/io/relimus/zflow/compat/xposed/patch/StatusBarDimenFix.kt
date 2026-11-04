@@ -65,6 +65,15 @@ object StatusBarDimenFix {
 
     private const val NAME = "StatusBarDimenFix"
 
+    /**
+     * 小窗里把 `status_bar_height` 收缩到的值。
+     *
+     * **不能用 0**：2026-11-04 22:21 实测发现，微信把 124 换成 0 之后标题栏仍然下移
+     * 90px —— 90 = 25dp × 3.6density，正是「读取不到就用 25dp 兜底」的典型写法。
+     * 给一个 >0 的极小值既避免兜底，又几乎不占位。
+     */
+    private const val SHRUNK_PX = 1
+
     /** 当前所在显示设备；由 onResume / onMovedToDisplay 更新。默认主屏 → 不改任何行为。 */
     @Volatile
     private var currentDisplayId: Int = Display.DEFAULT_DISPLAY
@@ -243,11 +252,11 @@ object StatusBarDimenFix {
             return false
         }
         var ok = false
-        // 方法名 → 归零时返回的值（float 重载要 0f，否则类型不匹配）
+        // 方法名 → 归零时返回的值（float 重载要 Float，否则类型不匹配）
         val targets = listOf(
-            "getDimensionPixelSize" to (0 as Any),
-            "getDimensionPixelOffset" to (0 as Any),
-            "getDimension" to (0f as Any),
+            "getDimensionPixelSize" to (SHRUNK_PX as Any),
+            "getDimensionPixelOffset" to (SHRUNK_PX as Any),
+            "getDimension" to (SHRUNK_PX.toFloat() as Any),
         )
         for ((name, zero) in targets) {
             val methods = Reflect.findMethods(resourcesClass, name)
@@ -288,8 +297,8 @@ object StatusBarDimenFix {
 
         if (loggedZeroHits.add(displayId)) {
             PatchLog.info(
-                "$NAME: displayId=$displayId 非主屏，status_bar_height $result → " +
-                    if (zero is Float) "0.0" else "0"
+                "$NAME: displayId=$displayId 非主屏，status_bar_height $result → $SHRUNK_PX" +
+                    "（不用 0：部分应用对 <=0 有 25dp 兜底，反而会留一条灰带）"
             )
         }
         return zero

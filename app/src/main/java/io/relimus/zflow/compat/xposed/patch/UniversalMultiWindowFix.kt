@@ -3,6 +3,7 @@ package io.relimus.zflow.compat.xposed.patch
 import android.app.Activity
 import android.os.SystemClock
 import android.view.Display
+import android.view.View
 import io.github.libxposed.api.XposedModule
 import io.relimus.zflow.compat.xposed.util.PatchLog
 import io.relimus.zflow.compat.xposed.util.PatchSettings
@@ -104,6 +105,7 @@ object UniversalMultiWindowFix {
     private val loggedFlagHits = ConcurrentHashMap.newKeySet<String>()
     private val loggedPrefHits = ConcurrentHashMap.newKeySet<String>()
     private val loggedWriterHits = ConcurrentHashMap.newKeySet<String>()
+    private val loggedTopOffset = ConcurrentHashMap.newKeySet<Int>()
 
     /** 开关缓存：这两个 hook 点调用很热，不能每次都读远程偏好。 */
     @Volatile
@@ -139,18 +141,24 @@ object UniversalMultiWindowFix {
         hookOverrides(module, classLoader)
         val prefsHooked = hookPrefs(module, classLoader)
         val writerHooked = hookMarginWriter(module, classLoader)
+        val offsetHooked = hookTopOffset(module, classLoader)
 
         when {
-            writerHooked && flagHooked && prefsHooked ->
-                PatchLog.info("$NAME: 安装完成 —— 写入钳制 + 多窗口诱导 + 缓存中和均已生效")
+            writerHooked && offsetHooked ->
+                PatchLog.info(
+                    "$NAME: 安装完成 —— 写入钳制 + 标题栏位移钳制生效" +
+                        if (flagHooked || prefsHooked) "（多窗口诱导/缓存中和作为兜底）" else ""
+                )
             writerHooked ->
                 PatchLog.info("$NAME: 安装完成 —— 写入钳制生效（直接改写入口，不再依赖 H）")
+            offsetHooked ->
+                PatchLog.info("$NAME: 安装完成 —— 仅标题栏位移钳制生效")
             flagHooked ->
                 PatchLog.info("$NAME: 安装完成 —— 仅多窗口诱导生效（未定位到写入方法）")
             prefsHooked ->
                 PatchLog.info("$NAME: 安装完成 —— 仅缓存中和生效（未挂上 isInMultiWindowMode）")
             else ->
-                PatchLog.warn("$NAME: 三个 hook 点都未装上，补丁未生效")
+                PatchLog.warn("$NAME: 四个 hook 点都未装上，补丁未生效")
         }
     }
 
@@ -318,6 +326,82 @@ object UniversalMultiWindowFix {
         }.getOrDefault(false)
 
         return hooked
+    }
+
+    // ---------------------------------------------------------------- 第四层：标题栏位移
+
+    /**
+     * 兜住「写入点之外的第二条路径」：`ActionBarContainer.translationY`。
+     *
+     * 2026-11-04 22:21 实测：`status_bar_height` 已经归零，`MainUI` 的写入点一次都没被调用，
+     * 但自动快照里标题栏仍然是 `ActionBarContainer @0,90 ty=90.0` —— 90px = 25dp × 3.6，
+     * 说明微信没读我们改过的资源，而是走了「读不到就用 25dp 兜底」的分支。
+     *
+     * 既然源头不止一个，就改在**结果**上：`View.setTranslationY(float)` 是框架方法，
+     * 永远不混淆；虚拟屏里凡是把标题栏容器往下推的正值，一律改成 0。
+     *
+     * 只处理 `*ActionBarContainer`、只处理 `> 0`、只在虚拟屏：向上隐藏标题栏的动画
+     * （负值）保持原样，主屏完全放行。
+     */
+    private fun hookTopOffset(module: XposedModule, classLoader: ClassLoader): Boolean {
+        val viewClass = Reflect.findClass("android.view.View", classLoader) ?: run {
+            PatchLog.warn("$NAME: 未找到 android.view.View，标题栏位移钳制不可用")
+            return false
+        }
+        val floatType = Float::class.javaPrimitiveType ?: return false
+        val method = Reflect.findMethodExact(viewClass, "setTranslationY", floatType) ?: run {
+            PatchLog.warn("$NAME: View.setTranslationY(float) 未找到")
+            return false
+        }
+
+        val hooked = runCatching {
+            module.hook(method).intercept { chain ->
+                val value = chain.getArg(0) as? Float ?: 0f
+                // 热点方法（每帧动画都会走）：不满足条件的调用尽早放行
+                if (value <= 0f) return@intercept chain.proceed()
+                if (!enabled()) return@intercept chain.proceed()
+
+                val host = chain.thisObject as? View ?: return@intercept chain.proceed()
+                if (!host.javaClass.name.endsWith("ActionBarContainer")) {
+                    return@intercept chain.proceed()
+                }
+
+                val displayId = runCatching { host.display?.displayId }.getOrNull()
+                    ?: VirtualDisplayTracker.displayId
+                if (displayId == Display.DEFAULT_DISPLAY) return@intercept chain.proceed()
+
+                if (loggedTopOffset.add(displayId)) {
+                    PatchLog.info(
+                        "$NAME: displayId=$displayId 标题栏被下移 ${value.toInt()}px → 强制 0，" +
+                            "调用方=${callerChain()}"
+                    )
+                }
+                chain.proceed(arrayOf<Any>(0f))
+            }
+            PatchLog.info(
+                "$NAME: 已挂钩 android.view.View#setTranslationY(float) → 虚拟屏标题栏不再下移"
+            )
+            true
+        }.onFailure {
+            PatchLog.warn("$NAME: 挂钩 View.setTranslationY(float) 失败", it)
+        }.getOrDefault(false)
+
+        return hooked
+    }
+
+    /**
+     * 首次命中时打印调用链，用来确认到底是谁把标题栏推下去的。
+     * 只保留微信自己的帧，最多 5 层，避免日志被 framework 栈刷屏。
+     */
+    private fun callerChain(): String {
+        val frames = Throwable().stackTrace
+            .asSequence()
+            .filter { it.className.startsWith("com.tencent.mm") }
+            .filterNot { it.className.contains("UniversalMultiWindowFix") }
+            .take(5)
+            .map { it.className.substringAfterLast('.') + "." + it.methodName + ":" + it.lineNumber }
+            .toList()
+        return if (frames.isEmpty()) "?" else frames.joinToString(" < ")
     }
 
     // ---------------------------------------------------------------- 第二层
