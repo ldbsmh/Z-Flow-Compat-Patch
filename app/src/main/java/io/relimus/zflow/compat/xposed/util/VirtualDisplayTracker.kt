@@ -80,7 +80,7 @@ object VirtualDisplayTracker {
         }
         return runCatching {
             module.hook(onCreate).intercept { chain ->
-                update(displayIdOf(chain.thisObject), "onCreate")
+                update(displayIdOf(chain.thisObject), "onCreate", chain.thisObject)
                 chain.proceed()
             }
             true
@@ -97,7 +97,7 @@ object VirtualDisplayTracker {
         return runCatching {
             module.hook(onResume).intercept { chain ->
                 // proceed 之前更新：onResume 里可能立刻读缓存
-                update(displayIdOf(chain.thisObject), "onResume")
+                update(displayIdOf(chain.thisObject), "onResume", chain.thisObject)
                 chain.proceed()
             }
             true
@@ -120,7 +120,7 @@ object VirtualDisplayTracker {
         return runCatching {
             module.hook(method).intercept { chain ->
                 // 先更新再 proceed：被搬运后的第一次取值就应该用新显示设备
-                update(chain.getArg(0) as? Int, "onMovedToDisplay")
+                update(chain.getArg(0) as? Int, "onMovedToDisplay", chain.thisObject)
                 chain.proceed()
             }
             true
@@ -129,10 +129,12 @@ object VirtualDisplayTracker {
         }.getOrDefault(false)
     }
 
-    private fun update(newDisplayId: Int?, source: String) {
+    private fun update(newDisplayId: Int?, source: String, host: Any?) {
         if (newDisplayId == null) return
         if (newDisplayId == displayId) return
-        PatchLog.debug("$NAME: 显示设备 $displayId → $newDisplayId（$source）")
+        // 带上 Activity 类名：虚拟屏与主屏交替出现时，日志才能看出是谁把标记改了
+        val who = host?.javaClass?.simpleName ?: "?"
+        PatchLog.debug("$NAME: 显示设备 $displayId → $newDisplayId（$source $who）")
         displayId = newDisplayId
     }
 

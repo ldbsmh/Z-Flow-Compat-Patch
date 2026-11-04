@@ -94,6 +94,10 @@ object UniversalMultiWindowFix {
     private val hookedOverrides = ConcurrentHashMap.newKeySet<String>()
     private val hookedPrefs = ConcurrentHashMap.newKeySet<String>()
 
+    /** 首次命中日志去重：同一条 (`label@displayId`、键名) 只打一次 info，详细日志不受影响。 */
+    private val loggedFlagHits = ConcurrentHashMap.newKeySet<String>()
+    private val loggedPrefHits = ConcurrentHashMap.newKeySet<String>()
+
     /** 开关缓存：这两个 hook 点调用很热，不能每次都读远程偏好。 */
     @Volatile
     private var cachedEnabled: Boolean = false
@@ -202,6 +206,12 @@ object UniversalMultiWindowFix {
                 PatchLog.debug(
                     "$NAME: displayId=$displayId $label.isInMultiWindowMode → true（诱导多窗口清零分支）"
                 )
+                if (loggedFlagHits.add("$label@$displayId")) {
+                    PatchLog.info(
+                        "$NAME: 首次命中 $label 在 displayId=$displayId，" +
+                            "isInMultiWindowMode 已改为 true"
+                    )
+                }
                 true
             }
             PatchLog.info("$NAME: 已挂钩 $label#isInMultiWindowMode → 虚拟屏返回 true")
@@ -270,6 +280,9 @@ object UniversalMultiWindowFix {
                         "$NAME: $label 拦截 $KEY_TOP_MARGIN " +
                             "(displayId=${VirtualDisplayTracker.displayId}) → -1"
                     )
+                    if (loggedPrefHits.add(KEY_TOP_MARGIN)) {
+                        PatchLog.info("$NAME: 首次拦截 $KEY_TOP_MARGIN → -1（虚拟屏忽略全屏缓存）")
+                    }
                     -1
                 } else {
                     chain.proceed()
@@ -290,6 +303,11 @@ object UniversalMultiWindowFix {
                         "$NAME: $label 拦截 $KEY_NEED_READ_TOP_MARGIN " +
                             "(displayId=${VirtualDisplayTracker.displayId}) → false"
                     )
+                    if (loggedPrefHits.add(KEY_NEED_READ_TOP_MARGIN)) {
+                        PatchLog.info(
+                            "$NAME: 首次拦截 $KEY_NEED_READ_TOP_MARGIN → false（虚拟屏不再读缓存）"
+                        )
+                    }
                     false
                 } else {
                     chain.proceed()

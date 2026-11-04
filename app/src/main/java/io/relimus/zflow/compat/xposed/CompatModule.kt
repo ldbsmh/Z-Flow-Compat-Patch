@@ -63,7 +63,13 @@ class CompatModule : XposedModule() {
         // 1b) 微信：版本无关的通用方案（实验，默认关闭）
         //     与 1) 是替代关系：两者同时开启时，旧的按名探测可能先命中并与多窗口分支
         //     互相覆盖，验证时建议只开一个。
-        runPatch("UniversalMultiWindowFix") { UniversalMultiWindowFix.install(this, cl, pkg) }
+        //     只装主进程：:push / :appbrand / :xweb 等子进程没有需要修的界面，
+        //     装进去只会多出几倍日志与无谓 hook。
+        if (hostProcessName.isEmpty() || hostProcessName == "com.tencent.mm") {
+            runPatch("UniversalMultiWindowFix") { UniversalMultiWindowFix.install(this, cl, pkg) }
+        } else {
+            PatchLog.debug("UniversalMultiWindowFix: process=$hostProcessName 非微信主进程，跳过")
+        }
 
         // 2) 通用：小窗顶部空白（任何加入作用域的应用都可能命中）
         //    微信进程必须排除：微信的状态栏高度由 WeChatStatusBarFix 统一处理，

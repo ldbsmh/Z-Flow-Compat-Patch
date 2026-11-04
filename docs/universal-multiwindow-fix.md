@@ -116,3 +116,35 @@ UniversalMultiWindowFix: … 拦截 Main_top_marign (displayId=N) → -1
   可能互相覆盖，且日志会混在一起。
 - 旧方案仍然是默认值，新方案验证通过后可以把旧方案的候选表逐步删除，届时
   `WeChatStatusBarFix` 只剩 Telegram 之外的通用逻辑。
+
+## 8. 实测记录：微信 8.0.76（3141），2026-11-04
+
+一次「小窗 → 展开 → 缩回」两轮的日志（LSPosed modules 导出，约 39 秒）：
+
+| 时间 | 事件 |
+| --- | --- |
+| 21:19:34.326 | `wechat=false universal=true`，旧补丁关闭，新补丁开始安装 |
+| 21:19:34.333 | 三个追踪点全部装上（onCreate / onResume / onMovedToDisplay） |
+| 21:19:34.334 | 已挂钩 `Activity.isInMultiWindowMode`；LauncherUI / MainUI / MMFragmentActivity 均未重写 |
+| 21:19:34.338 | 偏好层四个 hook 全部装上（`MultiProcessSharedPreferences` + `SharedPreferencesImpl`） |
+| 21:19:37.932 | 显示设备 0 → 6（onCreate） |
+| 21:19:38.090 ~ 47.493 | displayId=6 命中 26 次 |
+| 21:19:49.391 | 显示设备 0 → 7 |
+| 21:19:49.464 ~ 21:20:00.671 | displayId=7 命中 205 次 |
+| 21:20:02.577 | 显示设备 0 → 8 |
+| 21:20:02.651 ~ .957 | displayId=8 命中 15 次 |
+
+结论：
+
+1. **L1 完全生效**：246 次 `isInMultiWindowMode → true`，全部落在虚拟屏（6/7/8），
+   没有一次在主屏误改；全过程无异常、无崩溃。
+2. **L2 一次都没触发**，而且这是预期结果：微信的缓存读取分支本身就在
+   `if (!inMultiWindow)` 里面 —— L1 让它认定自己在多窗口后，`Main_top_marign` 这条
+   路径**根本不会被走到**。L2 因此只是"L1 失效时的兜底"，不是必现路径。
+3. Z-Flow 每次进小窗都会新建一个虚拟显示屏（6 → 7 → 8），Activity 会重建；跟踪器
+   期间出现 `6→0`、`7→0`，说明微信同一时刻在两种显示设备上都有 Activity，
+   **进程级追踪天然不可靠**，能拿到 Activity/Context 的地方仍应直接读它自己的 display
+   （L1 就是这么做的，所以不受影响）。
+4. 打开详细日志后 246 行会刷屏，已改为：每次 (类, displayId) 只打一次 info +
+   其余 debug；同时只装微信主进程，子进程（:push / :appbrand / :xweb）不再安装。
+
