@@ -43,6 +43,10 @@ object LayoutDump {
     @Volatile
     private var receiver: BroadcastReceiver? = null
 
+    /** 每个虚拟屏自动快照的次数（进入首页、从通讯录返回都会各自触发一次 onResume）。 */
+    private val autoDumpCount = java.util.concurrent.ConcurrentHashMap<Int, Int>()
+    private const val AUTO_DUMP_LIMIT = 6
+
     /** 最近一次 resume 的 Activity，广播到达时以它为准。 */
     @Volatile
     private var current: WeakReference<Activity>? = null
@@ -74,6 +78,7 @@ object LayoutDump {
                 if (activity != null) {
                     current = WeakReference(activity)
                     ensureReceiver(activity)
+                    autoDump(activity)
                 }
             }
             true
@@ -86,6 +91,30 @@ object LayoutDump {
             return
         }
         PatchLog.info("$NAME: 诊断已就绪，广播 $ACTION 可打印当前页面视图树")
+    }
+
+
+    /**
+     * 进入虚拟屏后自动打一份布局快照（延迟 1.2 秒，等首帧测量完成）。
+     *
+     * 之前只能靠 adb 广播手动触发，设备一断线就没法取证；改成 onResume 自己触发后，
+     * LSPosed 日志里就带着真实布局，不需要截图，也不需要额外的操作步骤。
+     * 每个虚拟屏最多 [AUTO_DUMP_LIMIT] 次，避免日志爆量。
+     */
+    private fun autoDump(activity: Activity) {
+        val displayId = runCatching { activity.display?.displayId }.getOrNull() ?: return
+        if (displayId == android.view.Display.DEFAULT_DISPLAY) return
+        val done = autoDumpCount[displayId] ?: 0
+        if (done >= AUTO_DUMP_LIMIT) return
+        autoDumpCount[displayId] = done + 1
+        val decor = runCatching { activity.window?.decorView }.getOrNull() ?: return
+        val label = "auto-d" + displayId + "-n" + (done + 1) + "-" + activity.javaClass.simpleName
+        runCatching {
+            decor.postDelayed({
+                runCatching { dumpActivity(activity, label) }
+                    .onFailure { PatchLog.warn("$NAME: 自动快照失败", it) }
+            }, 1200L)
+        }
     }
 
     private fun ensureReceiver(activity: Activity) {
