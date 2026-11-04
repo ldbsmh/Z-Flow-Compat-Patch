@@ -83,6 +83,9 @@ object StatusBarDimenFix {
     @Volatile
     private var trackingHooked = false
 
+    /** 归零日志去重：每个 displayId 只打一次 info。 */
+    private val loggedZeroHits = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+
     fun install(module: XposedModule, classLoader: ClassLoader, pkg: String) {
         if (installed.get()) {
             PatchLog.debug("$NAME: 本进程已安装，跳过 (pkg=$pkg)")
@@ -96,7 +99,7 @@ object StatusBarDimenFix {
         PatchLog.info("$NAME: 开始安装（pkg=$pkg）")
 
         val activityHooked = hookActivityDisplayTracking(module, classLoader)
-        val resourcesHooked = hookGetDimensionPixelSize(module)
+        val resourcesHooked = hookDimensionReaders(module)
 
         if (activityHooked || resourcesHooked) {
             installed.set(true)
@@ -121,11 +124,41 @@ object StatusBarDimenFix {
             return false
         }
 
+        val onCreateHooked = hookOnCreate(module, activityClass)
         val onResumeHooked = hookOnResume(module, activityClass)
         val movedHooked = hookOnMovedToDisplay(module, activityClass)
 
-        trackingHooked = onResumeHooked || movedHooked
+        trackingHooked = onCreateHooked || onResumeHooked || movedHooked
         return trackingHooked
+    }
+
+    /**
+     * `onCreate` 也要跟：新 Activity 在虚拟屏上创建时，第一次 `setContentView` / 首次布局
+     * 往往发生在 `onResume` 之前。如果只挂 `onResume`，首次布局读到的 `status_bar_height`
+     * 仍是真机值（微信就是在这个时机把标题栏下移 124px 的）。
+     */
+    private fun hookOnCreate(module: XposedModule, activityClass: Class<*>): Boolean {
+        val onCreate = Reflect.findMethodExact(activityClass, "onCreate", android.os.Bundle::class.java)
+            ?: run {
+                PatchLog.debug("$NAME: Activity.onCreate(Bundle) 未找到")
+                return false
+            }
+        return runCatching {
+            module.hook(onCreate).intercept { chain ->
+                // proceed 之前更新：onCreate 里的首次布局就要用新显示设备
+                updateDisplayId(displayIdOf(chain.thisObject), "onCreate")
+                chain.proceed()
+            }
+            PatchLog.debug("$NAME: 已挂钩 Activity.onCreate（首次布局前的显示设备）")
+            true
+        }.onFailure {
+            PatchLog.warn("$NAME: 挂钩 Activity.onCreate 失败", it)
+        }.getOrDefault(false)
+    }
+
+    private fun displayIdOf(host: Any?): Int? {
+        val activity = host as? Activity ?: return null
+        return runCatching { activity.display?.displayId }.getOrNull()
     }
 
     private fun hookOnResume(module: XposedModule, activityClass: Class<*>): Boolean {
@@ -198,39 +231,48 @@ object StatusBarDimenFix {
      */
     private fun resolveDisplayId(): Int = currentDisplayId
 
-    private fun hookGetDimensionPixelSize(module: XposedModule): Boolean {
+    /**
+     * hook 三个读尺寸的入口：`getDimensionPixelSize` / `getDimensionPixelOffset` / `getDimension`。
+     *
+     * 不同应用（以及同一应用的不同页面）用的不一定是同一个重载；只挂其中一个会出现
+     * "某些页面改了、某些没改"的半生效状态。
+     */
+    private fun hookDimensionReaders(module: XposedModule): Boolean {
         val resourcesClass = Reflect.findClass("android.content.res.Resources", null) ?: run {
             PatchLog.debug("$NAME: Resources 类未找到")
             return false
         }
-        val methods = Reflect.findMethods(resourcesClass, "getDimensionPixelSize")
-        if (methods.isEmpty()) {
-            PatchLog.debug("$NAME: Resources.getDimensionPixelSize 未找到")
-            return false
-        }
-        PatchLog.debug("$NAME: getDimensionPixelSize 重载数=${methods.size}")
-
         var ok = false
-        for (m in methods) {
-            // 只关心 (int) 这个重载
-            if (m.parameterCount != 1 || m.parameterTypes[0] != Int::class.javaPrimitiveType) {
-                PatchLog.debug("$NAME: 跳过重载 (${m.parameterTypes.joinToString { it.simpleName }})")
+        // 方法名 → 归零时返回的值（float 重载要 0f，否则类型不匹配）
+        val targets = listOf(
+            "getDimensionPixelSize" to (0 as Any),
+            "getDimensionPixelOffset" to (0 as Any),
+            "getDimension" to (0f as Any),
+        )
+        for ((name, zero) in targets) {
+            val methods = Reflect.findMethods(resourcesClass, name)
+            if (methods.isEmpty()) {
+                PatchLog.debug("$NAME: Resources.$name 未找到")
                 continue
             }
-            val hooked = runCatching {
-                module.hook(m).intercept { chain -> handle(chain) }
-                true
-            }.onFailure {
-                PatchLog.warn("$NAME: 挂钩 Resources.getDimensionPixelSize(int) 失败", it)
-            }.getOrDefault(false)
-            ok = ok || hooked
+            for (m in methods) {
+                if (m.parameterCount != 1 || m.parameterTypes[0] != Int::class.javaPrimitiveType) {
+                    continue
+                }
+                val hooked = runCatching {
+                    module.hook(m).intercept { chain -> handle(chain, zero) }
+                    true
+                }.onFailure {
+                    PatchLog.warn("$NAME: 挂钩 Resources.$name(int) 失败", it)
+                }.getOrDefault(false)
+                if (hooked) PatchLog.debug("$NAME: 已挂钩 Resources.$name(int)")
+                ok = ok || hooked
+            }
         }
-
-        if (ok) PatchLog.debug("$NAME: 已挂钩 Resources.getDimensionPixelSize(int)")
         return ok
     }
 
-    private fun handle(chain: XposedInterface.Chain): Any? {
+    private fun handle(chain: XposedInterface.Chain, zero: Any): Any? {
         val result = chain.proceed()
 
         val displayId = resolveDisplayId()
@@ -244,8 +286,13 @@ object StatusBarDimenFix {
         if (targetId == 0) return result
         if (id != targetId) return result
 
-        PatchLog.debug("$NAME: displayId=$displayId 非主屏，status_bar_height $result → 0")
-        return 0
+        if (loggedZeroHits.add(displayId)) {
+            PatchLog.info(
+                "$NAME: displayId=$displayId 非主屏，status_bar_height $result → " +
+                    if (zero is Float) "0.0" else "0"
+            )
+        }
+        return zero
     }
 
     /** 解析并缓存 `android:dimen/status_bar_height` 的 id。 */

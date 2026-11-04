@@ -79,12 +79,22 @@ class CompatModule : XposedModule() {
         }
 
         // 2) 通用：小窗顶部空白（任何加入作用域的应用都可能命中）
-        //    微信进程必须排除：微信的状态栏高度由 WeChatStatusBarFix 统一处理，
-        //    通用补丁会把框架 status_bar_height 改 0，与微信自己的状态栏预留
-        //    逻辑打架，导致"功能项被顶部覆盖/布局错位"。
+        //    微信进程默认排除：旧方案 WeChatStatusBarFix 自己管理状态栏预留，通用补丁
+        //    再把框架 status_bar_height 改 0 会打架，导致"功能项被顶部覆盖/布局错位"。
+        //    但通用方案（universal）打开时反过来 —— 实测日志显示微信是把
+        //    `android:dimen/status_bar_height`（124px）读出来下移标题栏的，
+        //    旧方案已经关闭，这里就需要它归零，否则顶部永远留一条灰带。
+        val universalEnabled = PatchSettings.isEnabled(
+            PatchSettings.KEY_UNIVERSAL_MULTIWINDOW_FIX,
+            default = false,
+        )
         val isWeChatProcess = hostProcessName == "com.tencent.mm" ||
             hostProcessName.startsWith("com.tencent.mm:")
-        if (!isWeChatProcess) {
+        val allowInWeChat = universalEnabled && hostProcessName == "com.tencent.mm"
+        if (!isWeChatProcess || allowInWeChat) {
+            if (allowInWeChat) {
+                PatchLog.info("StatusBarDimenFix: 通用方案已开启，微信进程内也启用（仅主进程）")
+            }
             runPatch("StatusBarDimenFix") { StatusBarDimenFix.install(this, cl, pkg) }
         } else {
             PatchLog.debug(

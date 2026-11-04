@@ -227,3 +227,38 @@ else   { margin = p1; mask = p2; }      // 普通分支，写回全屏偏移
 
 第三层的钳制就作用在这唯一入口上：`(0,124) → (0,0)`，即遮罩高度归零。剩下的验证点是
 **双行状态是否也走同一个入口**（若是 `(124,124)`，同样已被拦下；若不是，需要看视图树）。
+
+## 12. 自动快照抓到了灰带的真正来源（22:13 日志）
+
+进入虚拟屏 1.3 秒后的快照（displayId=49，1440x2520，density=3.6）：
+
+```text
+status_bar_height=124 insetsTop=0 cutoutTop=0 multiWindow=true windowingMode=-1
+ActionBarContainer #ei 1440x173 @0,124 ... ty=124.0
+fragment com.tencent.mm.ui.conversation.MainUI
+  H=true
+```
+
+三条结论：
+
+1. **灰带的来源是标题栏被整体下移，不是 `u0` 的遮罩。** `ActionBarContainer` 的
+   `translationY=124`，而 124 正好等于 `status_bar_height`；`insetsTop=0` 说明不是窗口
+   inset 给的，是微信自己按资源值算的。所以钳制 `u0` 只能消掉遮罩那一层，消不掉这条带。
+2. **`H` 是"晚一步"变成 true 的**：`u0` 被调用时 `H=false`（22:13:23.110），1.1 秒后
+   快照里已经是 `H=true`。也就是说我们的诱导确实传到了微信，但**首次布局已经用 false
+   走完了一遍**，124 就在那一刻写下去了。这也解释了「轻拉一下就好」——重新布局会再走一次
+   `u0`，那时 `H` 已是 true。
+3. 快照里只有一处 `text="微信(1)"`，说明这一刻是**单行 + 灰带**（"小点"那态），
+   双行这次没有复现。
+
+## 13. 第四层：让微信读到 `status_bar_height = 0`
+
+既然 124 来自 `android:dimen/status_bar_height`，那就在**读取处**归零，一次解决
+标题栏下移、遮罩高度、以及所有按状态栏高度排版的页面。具体改动：
+
+- `StatusBarDimenFix` 原来在微信进程里被硬性排除（旧方案自己管理状态栏预留，两者打架）。
+  现在只要「通用多窗口修复」开关打开，**微信主进程也启用**（子进程仍然排除）。
+- 新增 `onCreate` 追踪：首次布局发生在 `onResume` 之前，只挂 `onResume` 会让首帧读到真机值。
+- 读取入口从 `getDimensionPixelSize` 扩到 `getDimensionPixelSize` /
+  `getDimensionPixelOffset` / `getDimension` 三个重载，避免"某些页面改了、某些没改"。
+- 每个 displayId 首次归零打一条 info（`status_bar_height 124 → 0`），便于确认生效。
