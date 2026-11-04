@@ -67,6 +67,12 @@ object UniversalMultiWindowFix {
     private const val KEY_NEED_READ_TOP_MARGIN = "Main_need_read_top_margin"
 
     /**
+     * 微信首页容器类。类名是微信自己写的、不参与混淆（`com.tencent.mm.ui.conversation`），
+     * 8.0.5x ~ 8.0.79 一直存在。
+     */
+    private const val MAIN_UI_CLASS = "com.tencent.mm.ui.conversation.MainUI"
+
+    /**
      * 可能重写 `isInMultiWindowMode()` 的微信类。
      *
      * 这个是**框架方法名**：任何重写它的类都必须保持同名（否则 super 调用就断了），
@@ -97,6 +103,7 @@ object UniversalMultiWindowFix {
     /** 首次命中日志去重：同一条 (`label@displayId`、键名) 只打一次 info，详细日志不受影响。 */
     private val loggedFlagHits = ConcurrentHashMap.newKeySet<String>()
     private val loggedPrefHits = ConcurrentHashMap.newKeySet<String>()
+    private val loggedWriterHits = ConcurrentHashMap.newKeySet<String>()
 
     /** 开关缓存：这两个 hook 点调用很热，不能每次都读远程偏好。 */
     @Volatile
@@ -131,16 +138,19 @@ object UniversalMultiWindowFix {
         val flagHooked = hookActivityFlag(module, classLoader)
         hookOverrides(module, classLoader)
         val prefsHooked = hookPrefs(module, classLoader)
+        val writerHooked = hookMarginWriter(module, classLoader)
 
         when {
-            flagHooked && prefsHooked ->
-                PatchLog.info("$NAME: 安装完成 —— 多窗口诱导 + 缓存中和均已生效")
+            writerHooked && flagHooked && prefsHooked ->
+                PatchLog.info("$NAME: 安装完成 —— 写入钳制 + 多窗口诱导 + 缓存中和均已生效")
+            writerHooked ->
+                PatchLog.info("$NAME: 安装完成 —— 写入钳制生效（直接改写入口，不再依赖 H）")
             flagHooked ->
-                PatchLog.info("$NAME: 安装完成 —— 仅多窗口诱导生效（未命中偏好实现类）")
+                PatchLog.info("$NAME: 安装完成 —— 仅多窗口诱导生效（未定位到写入方法）")
             prefsHooked ->
                 PatchLog.info("$NAME: 安装完成 —— 仅缓存中和生效（未挂上 isInMultiWindowMode）")
             else ->
-                PatchLog.warn("$NAME: 两个 hook 点都未装上，补丁未生效")
+                PatchLog.warn("$NAME: 三个 hook 点都未装上，补丁未生效")
         }
     }
 
@@ -203,9 +213,6 @@ object UniversalMultiWindowFix {
                     return@intercept chain.proceed()
                 }
 
-                PatchLog.debug(
-                    "$NAME: displayId=$displayId $label.isInMultiWindowMode → true（诱导多窗口清零分支）"
-                )
                 if (loggedFlagHits.add("$label@$displayId")) {
                     PatchLog.info(
                         "$NAME: 首次命中 $label 在 displayId=$displayId，" +
@@ -231,6 +238,86 @@ object UniversalMultiWindowFix {
         val getContext = Reflect.findMethod(host.javaClass, "getContext", 0) ?: return null
         val ctx = Reflect.callMethod(host, getContext) as? android.content.Context ?: return null
         return runCatching { ctx.display?.displayId }.getOrNull()
+    }
+
+    // ---------------------------------------------------------------- 第三层：写入钳制
+
+    /**
+     * 直接改写首页顶部偏移的**写入点**，不再试图影响 `H` 的取值。
+     *
+     * 首次实测日志（2026-11-04 21:26）证明：`isInMultiWindowMode()` 在虚拟屏命中了 174 次，
+     * 但双行/小点照样出现 —— 说明微信的 `H` 不是从这个框架方法取值（大概率来自
+     * `Configuration` 或它自己的工具类），第一层诱导打不中要害。
+     *
+     * 换个位置：微信首页的顶部偏移只有一个写入口，8.0.76 是 `MainUI.u0(int, int)`。
+     * 它在多窗口分支里本来就把两个参数清零，所以**在调用点直接把参数换成 (0, 0)**
+     * 等价于「让微信永远走多窗口分支」，且完全不需要知道 `H` 从哪来。
+     *
+     * 定位方式不依赖混淆名：`MainUI` 类名稳定，方法按「唯一的 (int,int)void」签名锁定。
+     * 若某版本有多于一个候选（或一个都没有），只打警告并降级，不动手。
+     */
+    private fun hookMarginWriter(module: XposedModule, classLoader: ClassLoader): Boolean {
+        val clazz = Reflect.findClass(MAIN_UI_CLASS, classLoader) ?: run {
+            PatchLog.warn("$NAME: 未找到 $MAIN_UI_CLASS，写入钳制不可用")
+            return false
+        }
+        val intType = Int::class.javaPrimitiveType ?: return false
+        val candidates = clazz.declaredMethods.filter {
+            it.parameterCount == 2 &&
+                it.parameterTypes[0] == intType &&
+                it.parameterTypes[1] == intType &&
+                it.returnType == Void.TYPE
+        }
+        if (candidates.size != 1) {
+            PatchLog.warn(
+                "$NAME: $MAIN_UI_CLASS 中 (II)V 方法数=${candidates.size}，" +
+                    "无法唯一定位写入点，已跳过（不影响其它两层）"
+            )
+            return false
+        }
+
+        val method = candidates.first()
+        val getActivity = Reflect.findMethod(clazz, "getActivity", 0)
+
+        val hooked = runCatching {
+            module.hook(method).intercept { chain ->
+                val host = chain.thisObject ?: return@intercept chain.proceed()
+                if (!enabled()) return@intercept chain.proceed()
+
+                val activity = (host as? Activity)
+                    ?: (Reflect.callMethod(host, getActivity) as? Activity)
+                val displayId = runCatching { activity?.display?.displayId }.getOrNull() ?: -1
+                if (displayId == Display.DEFAULT_DISPLAY || displayId < 0) {
+                    return@intercept chain.proceed()
+                }
+
+                val margin = chain.getArg(0) as? Int ?: 0
+                val mask = chain.getArg(1) as? Int ?: 0
+
+                if (loggedWriterHits.add("${method.name}@$displayId")) {
+                    val h = Reflect.getField(host, "H")
+                    PatchLog.info(
+                        "$NAME: 首次命中写入点 ${method.name}($margin,$mask) " +
+                            "H=$h displayId=$displayId → 强制改写为 (0,0)"
+                    )
+                } else if (margin != 0 || mask != 0) {
+                    PatchLog.debug(
+                        "$NAME: ${method.name}($margin,$mask) displayId=$displayId → (0,0)"
+                    )
+                }
+
+                // 微信多窗口分支的等价写法：margin=0、maskHeight=0
+                chain.proceed(arrayOf(0, 0))
+            }
+            PatchLog.info(
+                "$NAME: 已挂钩 $MAIN_UI_CLASS#${method.name}(int,int) → 虚拟屏强制 (0,0)"
+            )
+            true
+        }.onFailure {
+            PatchLog.warn("$NAME: 挂钩 $MAIN_UI_CLASS#${method.name}(II) 失败", it)
+        }.getOrDefault(false)
+
+        return hooked
     }
 
     // ---------------------------------------------------------------- 第二层

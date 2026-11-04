@@ -9,6 +9,7 @@ import io.relimus.zflow.compat.xposed.patch.StatusBarDimenFix
 import io.relimus.zflow.compat.xposed.patch.TelegramPipDisableFix
 import io.relimus.zflow.compat.xposed.patch.UniversalMultiWindowFix
 import io.relimus.zflow.compat.xposed.patch.WeChatStatusBarFix
+import io.relimus.zflow.compat.xposed.util.LayoutDump
 import io.relimus.zflow.compat.xposed.util.PatchLog
 import io.relimus.zflow.compat.xposed.util.PatchSettings
 
@@ -69,6 +70,12 @@ class CompatModule : XposedModule() {
             runPatch("UniversalMultiWindowFix") { UniversalMultiWindowFix.install(this, cl, pkg) }
         } else {
             PatchLog.debug("UniversalMultiWindowFix: process=$hostProcessName 非微信主进程，跳过")
+        }
+
+        // 1c) 诊断：详细日志打开时，可用 adb 广播打印当前页面视图树
+        //     只装微信主进程（目前只在微信上需要判断"哪一层多出了多少像素"）
+        if (PatchLog.verbose && (hostProcessName.isEmpty() || hostProcessName == "com.tencent.mm")) {
+            runPatch("LayoutDump") { LayoutDump.install(this, cl) }
         }
 
         // 2) 通用：小窗顶部空白（任何加入作用域的应用都可能命中）
