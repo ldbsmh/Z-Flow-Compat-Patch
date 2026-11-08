@@ -86,6 +86,13 @@
                     style="@style/ItemDivider" />
 
                 <include
+                    android:id="@+id/item_rebuild"
+                    layout="@layout/item_setting_switch" />
+
+                <View
+                    style="@style/ItemDivider" />
+
+                <include
                     android:id="@+id/item_telegram"
                     layout="@layout/item_setting_switch" />
             </LinearLayout>

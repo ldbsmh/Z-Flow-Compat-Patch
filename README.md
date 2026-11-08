@@ -11,7 +11,7 @@
 | 补丁 | 修复内容 | 生效方式 |
 | --- | --- | --- |
 | **微信小窗顶部布局修复** | 修正首页透明重复标题行、通讯录/发现冷启动被顶部覆盖、通讯录跨窗口后顶部变宽 | 将微信加入 LSPosed 作用域；更新模块后完整结束微信进程再测试 |
-| **小窗顶部空白修复** | 修正部分应用直接读取系统 `status_bar_height` 而产生顶部空白（如起点读书） | 将目标应用加入作用域；**微信进程会被自动排除** |
+| **小窗顶部空白修复** | 修正部分应用直接读取系统 `status_bar_height` 而产生顶部空白（如起点读书）；并保证「展开」回主屏后状态栏不会压住内容 | 将目标应用加入作用域；**微信进程会被自动排除**；个别应用需再打开「展开后重建界面」（见第 30 节） |
 | **关闭 Telegram 画中画** | 修正 Telegram 系应用在小窗中只剩角落画面 | 将目标应用加入作用域；主屏画中画也会被关闭 |
 
 ---
@@ -1395,3 +1395,97 @@ setListMargin isInMultiWindowMode
 setListMargin origin
 setStatusBarMaskView height origin
 ```
+
+---
+
+# 小窗「展开」后的状态栏留白：成因与修法
+
+## 30. 现象：小窗里干净了，展开反而被状态栏压住
+
+对齐「小窗顶部空白修复」之后，起点读书等应用在小窗里顶部不再有宽额头，
+但点右上角「展开」回到主屏后，系统状态栏（时间、信号、通知图标）会压在应用自己的
+标题栏上 —— 书架页最容易看出来：时钟与「起点读书／搜索／消息」挤在同一行。
+
+这不是又一次「判定失败」，而是同一个 `0` 在两个窗口状态下的取值冲突：
+
+| 窗口状态 | 有没有系统状态栏覆盖应用 | 应用应该预留的高度 | 补丁返回值 |
+| --- | --- | --- | --- |
+| 小窗（虚拟屏） | 没有 | 0 | 0 |
+| 展开（主屏全屏） | 有 | `status_bar_height` | 必须恢复成原值 |
+
+## 31. 成因：展开是「搬任务」，不是「重建 Activity」
+
+Z-Flow 的展开路径是：
+
+```text
+FreeformWindow.startSunOsSurfaceControlledExpand()
+  → FreeformManager.moveTaskFromDisplayToDefault(displayId, taskId)
+    → HookReload.suppressNextRelaunch(rootTaskId)
+    → ActivityTaskManager.moveRootTaskToDisplay(rootTaskId, DEFAULT_DISPLAY)
+```
+
+两个关键事实：
+
+1. 任务被搬到主屏，`displayId` 真的变成 0；
+2. `suppressNextRelaunch` 抑制了配置变化引发的重建，**Activity 复用原实例**，
+   走 `onConfigurationChanged` / `onMovedToDisplay` 承接变化。
+
+于是小窗里拿到的那个 `0` 有两条出口，任一条都会让展开态失去顶部留白：
+
+- **判定滞后**：Activity 被复用后重排时再次读取 `status_bar_height`，而补丁缓存的
+  `currentDisplayId` 还停在虚拟屏上（两个回调的时机不保证早于那次重排）→ 继续返回 0。
+- **值被烤进布局**：应用只在 `onCreate` 读一次，写进 `padding` / 占位 `View` 的高度，
+  之后窗口尺寸变化也不重算 → 无论判定多准，展开态都还是 0。
+
+## 32. 修法：实时反查 + 可选重建（两层）
+
+### 第一层：hook 点实时反查显示设备（默认生效）
+
+不再只依赖缓存的 `currentDisplayId`：
+
+```kotlin
+// 弱引用记住当前 Activity，hook 点用活查询
+val displayId = lastActivity?.get()?.display?.displayId ?: cachedDisplayId
+```
+
+`Activity.getDisplay()` 是活查询，任务被搬到主屏后立刻返回 0，与生命周期回调的时序无关。
+同时把追踪前移到 `Activity.onCreate(Bundle)`（`proceed` **之前**登记），
+覆盖「进程里的第一次读取就发生在 onCreate」这条路径 —— 小窗冷启动的空白也因此更稳。
+
+### 第二层：展开后重建界面（`rebuild_on_expand`，默认关闭）
+
+只针对上面第二条出口（值被烤进布局）。三个条件同时成立才动手：
+
+1. 本进程**确实归零过**（小窗里改过它的布局）；
+2. 用户打开了设置里的「展开后重建界面」；
+3. 回到主屏后 800ms 宽限期内，应用**没有**再来读 `status_bar_height`
+   —— 说明它不会自己重算。
+
+满足即 `Activity.recreate()` 一次，让新 Activity 在 `onCreate` 里重新取值（此时已在主屏）。
+代价是那次展开会有一次页面重载（书架页等于刷新一次），因此默认关闭、按应用开启。
+
+### 为什么不做「窗口铺满就当归零」
+
+看起来更聪明的判据是「窗口是否铺满显示屏」，但对虚拟屏是错的：虚拟屏本身就没有状态栏，
+用户把小窗拉到接近虚拟屏大小同样是「铺满」，此时仍然应当归零。
+判据必须落在「应用是否在主屏」上，而不是窗口尺寸上。
+
+## 33. 验证与日志判读
+
+1. 打开「详细日志」，冷启动小窗打开起点读书 → 书架顶部无空白；
+2. 点「展开」回主屏 → 状态栏与标题栏分离，书架正常；
+
+对应日志：
+
+```text
+StatusBarDimenFix: 前台显示设备切换 0 → N（onCreate）
+StatusBarDimenFix: displayId=N 非主屏，status_bar_height 124 → 0
+StatusBarDimenFix: 前台显示设备切换 N → 0（onMovedToDisplay）
+```
+
+| 展开后现象 | 日志特征 | 结论 |
+| --- | --- | --- |
+| 正常 | 有 `切换 N → 0`，之后不再出现 `→ 0` | 第一层已解决 |
+| 仍被压住，且之后还有 `120 → 0` | 实时反查没有生效（`getDisplay()` 不可用） | 检查 ROM 是否屏蔽 `Activity.getDisplay()` |
+| 仍被压住，且之后**没有**任何 `status_bar_height` 读取 | 值已被烤进布局 | 打开「展开后重建界面」，日志出现 `重建 Activity 一次` |
+| 打开重建后每次展开都刷新页面但仍压住 | 应用在重建后也拿不到正确值 | 需要按第 22 节对目标版本做精确 hook |

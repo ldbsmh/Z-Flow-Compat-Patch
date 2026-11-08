@@ -17,6 +17,7 @@ import io.relimus.zflow.compat.xposed.util.PatchSettings
  * 只做三件事，都是"某个应用在小窗里显示不正常"的针对性修复：
  * 1. [WeChatStatusBarFix]：微信小窗双标题栏
  * 2. [StatusBarDimenFix]：小窗顶部空白（读框架 status_bar_height 的应用，如起点读书）
+ *    —— 附一个默认关闭的兜底开关「展开后重建界面」，处理"展开回主屏后状态栏压住内容"
  * 3. [TelegramPipDisableFix]：Telegram 系小窗只剩角落画面
  *
  * 每个补丁独立 try/catch：一个补丁不兼容不能影响另外两个。

@@ -56,6 +56,14 @@ class SettingsActivity : AppCompatActivity(),
             summaryRes = R.string.pref_statusbar_summary,
         )
         bindSwitch(
+            rowId = R.id.item_rebuild,
+            key = "rebuild_on_expand",
+            default = false,
+            iconRes = R.drawable.ic_patch_statusbar,
+            titleRes = R.string.pref_rebuild_title,
+            summaryRes = R.string.pref_rebuild_summary,
+        )
+        bindSwitch(
             rowId = R.id.item_telegram,
             key = "telegram_pip_disable",
             default = true,
@@ -173,7 +181,7 @@ class SettingsActivity : AppCompatActivity(),
         val editor = prefs.edit()
 
         for (key in PATCH_KEYS) {
-            val value = remote.getBoolean(key, true)
+            val value = remote.getBoolean(key, defaultOf(key))
             switchRows[key]?.isChecked = value
             editor.putBoolean(key, value)
         }
@@ -188,7 +196,7 @@ class SettingsActivity : AppCompatActivity(),
     /** 刷新所有开关为本地当前值（onResume 时调用）。 */
     private fun refreshAllSwitches() {
         for (key in PATCH_KEYS) {
-            switchRows[key]?.isChecked = prefs.getBoolean(key, true)
+            switchRows[key]?.isChecked = prefs.getBoolean(key, defaultOf(key))
         }
         for (key in LOG_KEYS) {
             switchRows[key]?.isChecked = prefs.getBoolean(key, defaultOf(key))
@@ -209,6 +217,7 @@ class SettingsActivity : AppCompatActivity(),
         val PATCH_KEYS = listOf(
             "wechat_statusbar_fix",
             "statusbar_dimen_fix",
+            "rebuild_on_expand",
             "telegram_pip_disable",
         )
         val LOG_KEYS = listOf(
@@ -216,9 +225,10 @@ class SettingsActivity : AppCompatActivity(),
             "log_to_framework",
         )
 
-        /** 默认值：补丁默认开，详细日志默认关，写框架日志默认开。 */
+        /** 默认值：补丁默认开（展开重建默认关），详细日志默认关，写框架日志默认开。 */
         fun defaultOf(key: String): Boolean = when (key) {
             "verbose_log" -> false
+            "rebuild_on_expand" -> false
             "log_to_framework" -> true
             else -> true
         }

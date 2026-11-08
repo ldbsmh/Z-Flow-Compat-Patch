@@ -19,6 +19,9 @@ object PatchSettings {
     /** 补丁开关 key（与 res/xml/settings.xml 一致） */
     const val KEY_WECHAT_STATUSBAR_FIX = "wechat_statusbar_fix"
     const val KEY_STATUSBAR_DIMEN_FIX = "statusbar_dimen_fix"
+
+    /** 小窗「展开」回主屏后，若应用没有重新读取状态栏高度，则重建界面一次（默认关闭）。 */
+    const val KEY_REBUILD_ON_EXPAND = "rebuild_on_expand"
     const val KEY_TELEGRAM_PIP_DISABLE = "telegram_pip_disable"
     const val KEY_VERBOSE_LOG = "verbose_log"
     const val KEY_LOG_TO_FRAMEWORK = "log_to_framework"
