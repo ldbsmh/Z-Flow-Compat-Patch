@@ -1489,3 +1489,51 @@ StatusBarDimenFix: 前台显示设备切换 N → 0（onMovedToDisplay）
 | 仍被压住，且之后还有 `120 → 0` | 实时反查没有生效（`getDisplay()` 不可用） | 检查 ROM 是否屏蔽 `Activity.getDisplay()` |
 | 仍被压住，且之后**没有**任何 `status_bar_height` 读取 | 值已被烤进布局 | 打开「展开后重建界面」，日志出现 `重建 Activity 一次` |
 | 打开重建后每次展开都刷新页面但仍压住 | 应用在重建后也拿不到正确值 | 需要按第 22 节对目标版本做精确 hook |
+
+## 34. 设置开关被写成关闭：远程偏好里的默认值固化
+
+### 现象
+
+补丁代码没动、作用域也在，但微信侧日志一直只有：
+
+```text
+设置已载入: verbose=true logToFramework=true wechat=false statusbar=true telegram=true
+WeChatStatusBarFix: 开关已关闭，跳过安装
+```
+
+即：`wechat_statusbar_fix=false`，微信补丁**在安装阶段就被跳过**，后面的锚点探测根本不会跑。
+小窗里双标题栏、通讯录顶部被覆盖等现象自然全部回来。
+
+### 为什么会变成 false
+
+远程偏好（框架侧那份 SharedPreferences）是**持久化**的，而且旧版设置页有两个坏习惯：
+
+1. `syncFromRemote()` 对框架里**不存在**的键也用 `getBoolean(key, default)`，
+   随后 `editor.putBoolean(key, value)` + 给 Switch 赋值 —— 一旦给 Switch 赋值时监听器已注册，
+   就会触发 `onSwitchToggled()`，把「当前默认值」**当成用户操作写回框架**。
+2. 于是某个曾经默认关闭过微信补丁的构建（例如带 `universal_multiwindow_fix` 的实验版）
+   把 `false` 固化进了远程偏好；之后无论装哪个版本，读到的都是 `false`，
+   而设置页每次打开又会再写一遍 `false`，形成自我强化。
+
+### 修法
+
+- 同步只处理框架里**真实存在**的键（`remote.contains(key)`），不再把默认值写进框架；
+- 同步和 `onSharedPreferenceChange` 期间置 `syncing`，`onSwitchToggled` 直接返回，
+  程序改 UI 不算用户操作，不写远程偏好。
+
+### 已经变成 false 的机器怎么恢复
+
+远程偏好里的旧值不会自动消失，需要手动把开关打开一次（此后才会写入 `true`）：
+
+1. 打开模块设置页；
+2. 打开「微信小窗标题栏重复修复」；
+3. **完整结束微信进程**（设置 → 应用 → 强制停止，或 `am force-stop com.tencent.mm`）；
+4. 重新以小窗打开微信，日志应出现：
+
+```text
+WeChatStatusBarFix: 开始安装（pkg=com.tencent.mm）
+WeChatStatusBarFix: source=... 已挂钩首页 H0()，清除跨屏残留 margin/mask
+```
+
+若开关打开后仍然只有「跳过安装」，说明写入没有到框架（`settings_write_failed` 弹窗），
+需要检查 LSPosed 里模块是否处于启用状态。

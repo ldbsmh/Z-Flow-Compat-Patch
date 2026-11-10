@@ -32,6 +32,9 @@ class SettingsActivity : AppCompatActivity(),
     /** key -> 行视图（用于刷新开关状态） */
     private val switchRows = mutableMapOf<String, SwitchCompat>()
 
+    /** 正在按代码同步开关状态：此时 Switch 的回调不算用户操作，不得写远程偏好。 */
+    private var syncing = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
@@ -164,6 +167,12 @@ class SettingsActivity : AppCompatActivity(),
 
     /** 开关变化：写本地 + 写框架远程偏好，失败弹窗提示。 */
     private fun onSwitchToggled(key: String, value: Boolean) {
+        // 程序同步 UI 状态时不是用户操作，绝不能反写远程偏好：
+        // 否则「打开设置页」这个动作本身就会把某个开关写成关闭（历史事故，见 README 第 34 节）。
+        if (syncing) {
+            prefs.edit().putBoolean(key, value).apply()
+            return
+        }
         prefs.edit().putBoolean(key, value).apply()
         val ok = RemotePrefsBridge.putBoolean(this, key, value)
         if (!ok) {
@@ -175,31 +184,43 @@ class SettingsActivity : AppCompatActivity(),
         }
     }
 
-    /** 启动时从框架远程偏好拉一次，避免重装/清数据后开关显示成默认值。 */
+    /**
+     * 启动时从框架远程偏好拉一次，避免重装/清数据后开关显示成默认值。
+     *
+     * 两个约束（都是踩过的坑）：
+     * 1. 只同步**框架里真实存在**的键。以前对缺失键用 `getBoolean(key, default)`，
+     *    会把「当前默认值」直接固化进远程偏好；之后改默认值就再也改不动了。
+     * 2. 同步期间置 [syncing]，禁止 [onSwitchToggled] 反写。否则给 Switch 赋值的
+     *    动作会被当成用户点击，往框架里再写一遍。
+     */
     private fun syncFromRemote() {
         val remote = RemotePrefsBridge.get(this) ?: return
         val editor = prefs.edit()
 
-        for (key in PATCH_KEYS) {
-            val value = remote.getBoolean(key, defaultOf(key))
-            switchRows[key]?.isChecked = value
-            editor.putBoolean(key, value)
-        }
-        for (key in LOG_KEYS) {
-            val value = remote.getBoolean(key, defaultOf(key))
-            switchRows[key]?.isChecked = value
-            editor.putBoolean(key, value)
+        syncing = true
+        try {
+            for (key in PATCH_KEYS + LOG_KEYS) {
+                val exists = runCatching { remote.contains(key) }.getOrDefault(false)
+                if (!exists) continue
+                val value = remote.getBoolean(key, defaultOf(key))
+                switchRows[key]?.isChecked = value
+                editor.putBoolean(key, value)
+            }
+        } finally {
+            syncing = false
         }
         editor.apply()
     }
 
     /** 刷新所有开关为本地当前值（onResume 时调用）。 */
     private fun refreshAllSwitches() {
-        for (key in PATCH_KEYS) {
-            switchRows[key]?.isChecked = prefs.getBoolean(key, defaultOf(key))
-        }
-        for (key in LOG_KEYS) {
-            switchRows[key]?.isChecked = prefs.getBoolean(key, defaultOf(key))
+        syncing = true
+        try {
+            for (key in PATCH_KEYS + LOG_KEYS) {
+                switchRows[key]?.isChecked = prefs.getBoolean(key, defaultOf(key))
+            }
+        } finally {
+            syncing = false
         }
     }
 
@@ -210,7 +231,12 @@ class SettingsActivity : AppCompatActivity(),
         // 本地被外部修改时同步 UI；本 Activity 自己写入的路径已在 onSwitchToggled 处理。
         if (key == null) return
         if (key !in PATCH_KEYS && key !in LOG_KEYS) return
-        switchRows[key]?.isChecked = sharedPreferences.getBoolean(key, defaultOf(key))
+        syncing = true
+        try {
+            switchRows[key]?.isChecked = sharedPreferences.getBoolean(key, defaultOf(key))
+        } finally {
+            syncing = false
+        }
     }
 
     private companion object {
